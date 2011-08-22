@@ -56,36 +56,53 @@
 (let ((a (random-sphere-ring)))
   (point-cloud-convolve a a))
 
-(defun project-and-bin (a &key (w 128) (rmax 2s0) (append nil))
-  (let ((res (make-array w :element-type '(unsigned-byte 64))))
-    (declare (type (simple-array (unsigned-byte 64) 1) res))
+;; http://en.wikipedia.org/wiki/Spherical_cap
+(defun sphere-ring-area (r dz)
+  (* #.(coerce (* 2 pi) 'single-float) r dz))
+
+(defun project-and-bin (a &key (w 128) (rmax 2s0))
+  (let ((hist (make-array w :element-type '(unsigned-byte 64))))
+    (declare (type (simple-array (unsigned-byte 64) 1) hist))
     (dotimes (i (array-dimension a 0))
-      (incf (aref res 
+      (incf (aref hist
 		  (min (1- w) (round (* (/ w rmax)
 					(sqrt
 					 (+ (expt (aref a i 0) 2)
 					    (expt (aref a i 1) 2)))))))))
-    (with-open-file (s "/dev/shm/rad.dat" :direction :output
-		       :if-exists (if append
-				      :append
-				      :supersede)
-		       :if-does-not-exist :create) 
-      (format s "~%")
-      (dotimes (i w)
-	(unless (= i 0)
-	  (let ((r (* i (/ rmax w))))
-	   (format s "~f ~d~%" r (/ (aref res i)
-				    (* r r)))))))
-    res))
+    
+    (loop for i below w collect
+	 (list (* i (/ rmax w)) (aref hist i)))))
+
+(defun output (a &key (scale 1s0) (append nil))
+  (with-open-file (s "/dev/shm/rad.dat" :direction :output
+		     :if-exists (if append
+				    :append
+				    :supersede)
+		     :if-does-not-exist :create) 
+    (format s "~%")
+    (dotimes (i (length a))
+      (unless (= i 0)
+	(destructuring-bind (r v) (elt a i)
+	  (let ((sv (* scale v)))
+	   (format s "~f ~f ~f~%"
+		   r
+		   (/ sv
+		      (* r r))
+		   (/ (* 9 (sqrt sv)) (* r r)))))))))
 
 #+nil
-(let ((i 0))
- (loop for ratio in '(.98 .95 .9 .8 .7 .6) do
-      (let* ((theta-max #.(coerce (* (/ pi 180) 67) 'single-float))
-	     (a (random-sphere-ring :theta-max theta-max
-				    :theta-min (* ratio theta-max) :n 1000)))
-	(project-and-bin
-	 (point-cloud-convolve a a)
-	 :w 80 :rmax (* 2.1 (sin theta-max))
-	 :append (/= i 0)))
-      (incf i)))
+(time
+ (let ((i 0))
+   (loop for ratio in '(.98 .95 .8 .5 .01) do
+	(let* ((theta-max #.(coerce (* (/ pi 180) 68) 'single-float))
+	       (a (random-sphere-ring :theta-max theta-max
+				      :theta-min (* ratio theta-max) :n 2000))
+	       (dz (abs (- (cos (* ratio theta-max)) ;; height of the ring cutout from sphere
+			   (cos theta-max))))
+	       (rmax (* 2.1 (sin theta-max)))
+	       (w 130))
+	  (output (project-and-bin (point-cloud-convolve a a)
+				   :w w :rmax rmax)
+		  :scale (/ (sphere-ring-area 1 dz))
+		  :append (/= i 0)))
+	(incf i))))
